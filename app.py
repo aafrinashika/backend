@@ -1,7 +1,8 @@
+import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
-from db import users_collection
+from db import users_collection, scans_collection
 from analyzer import analyze_header, extract_email_fields
 from auth import generate_token, token_required
 from feature_extractor import extract_features   # <-- NEW: Module 1 feature extractor
@@ -9,6 +10,19 @@ from feature_extractor import extract_features   # <-- NEW: Module 1 feature ext
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
 CORS(app)
+
+# Turns a MongoDB scan document into something jsonify() can send back
+# (ObjectId and datetime aren't JSON-serializable on their own).
+def serialize_scan(scan):
+    return {
+        "id": str(scan["_id"]),
+        "user_email": scan["user_email"],
+        "header_text": scan["header_text"],
+        "analysis_result": scan["analysis_result"],
+        "risk_score": scan["risk_score"],
+        "verdict": scan["verdict"],
+        "timestamp": scan["timestamp"].isoformat() + "Z"
+    }
 
 # Route 1: Home page - just to check server is alive
 @app.route('/')
@@ -26,6 +40,26 @@ def analyze():
         return jsonify({"error": "No header text provided"}), 400
 
     result = analyze_header(header_text)
+
+    # Save this scan to the user's history. request.current_user comes from
+    # the verified JWT (set by @token_required) - never trust an email sent
+    # by the client itself.
+    user_email = request.current_user.get('email')
+    scan_doc = {
+        "user_email": user_email,
+        "header_text": header_text,
+        "analysis_result": result,
+        "risk_score": result.get('riskScore'),
+        "verdict": result.get('verdict'),
+        "timestamp": datetime.datetime.utcnow()
+    }
+    try:
+        scans_collection.insert_one(scan_doc)
+    except Exception:
+        # Don't fail the whole request just because saving history failed -
+        # the user still gets their analysis result back.
+        pass
+
     return jsonify(result), 200
 # Route 3: Register - creates a new user
 @app.route('/register', methods=['POST'])
@@ -144,6 +178,58 @@ def extract_features_route():
 
     features = extract_features(header_text)
     return jsonify(features), 200
+
+# Route 7: Scan history - returns the logged-in user's saved scans, newest first
+@app.route('/api/scans/history', methods=['GET'])
+@token_required
+def scan_history():
+    user_email = request.current_user.get('email')
+
+    try:
+        scans = list(
+            scans_collection.find({"user_email": user_email}).sort("timestamp", -1)
+        )
+    except Exception:
+        return jsonify({"error": "Could not fetch scan history"}), 500
+
+    return jsonify({"scans": [serialize_scan(s) for s in scans]}), 200
+
+# Route 8: Scan reports - real aggregated stats for the logged-in user only
+@app.route('/api/scans/reports', methods=['GET'])
+@token_required
+def scan_reports():
+    user_email = request.current_user.get('email')
+
+    try:
+        scans = list(scans_collection.find({"user_email": user_email}))
+    except Exception:
+        return jsonify({"error": "Could not fetch report data"}), 500
+
+    total_scans = len(scans)
+
+    if total_scans == 0:
+        return jsonify({
+            "totalScans": 0,
+            "safeScans": 0,
+            "phishingScans": 0,
+            "riskPercentage": 0,
+            "averageRiskScore": 0
+        }), 200
+
+    phishing_scans = sum(1 for s in scans if s.get('verdict') == 'phishing')
+    safe_scans = total_scans - phishing_scans
+    risk_percentage = round((phishing_scans / total_scans) * 100, 2)
+    average_risk_score = round(
+        sum(s.get('risk_score', 0) for s in scans) / total_scans, 2
+    )
+
+    return jsonify({
+        "totalScans": total_scans,
+        "safeScans": safe_scans,
+        "phishingScans": phishing_scans,
+        "riskPercentage": risk_percentage,
+        "averageRiskScore": average_risk_score
+    }), 200
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

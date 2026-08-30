@@ -1,6 +1,6 @@
 # PhishShield AI — Backend
 
-Final-year project backend built with **Flask** + **MongoDB**, providing authentication and email header phishing analysis for the PhishShield AI frontend (React/Vite).
+Final-year project backend built with **Flask** + **MongoDB**, providing authentication, rule-based email phishing analysis, and ML-ready feature extraction for the PhishShield AI frontend (React/Vite).
 
 ---
 
@@ -10,10 +10,11 @@ Final-year project backend built with **Flask** + **MongoDB**, providing authent
 |---|---|
 | Backend framework | Flask 3.1.3 |
 | Database | MongoDB (local, via `mongodb://localhost:27017`) |
-| Password hashing | flask-bcrypt |
-| Authentication | JWT (PyJWT) |
-| CORS | flask-cors |
-| Config management | python-dotenv |
+| Password hashing | Flask-Bcrypt 1.0.1 (bcrypt 5.0.0) |
+| Authentication | JWT (PyJWT 2.13.0) |
+| CORS | flask-cors 6.0.5 |
+| Config management | python-dotenv 1.2.3 |
+| Mongo driver | pymongo 4.17.0 |
 
 ---
 
@@ -23,10 +24,12 @@ Final-year project backend built with **Flask** + **MongoDB**, providing authent
 phishshield-backend/
 ├── venv/                  # Python virtual environment (not shared/committed)
 ├── .env                   # Secret config (MONGO_URI, DB_NAME, JWT_SECRET)
+├── requirements.txt       # Pinned dependency versions
 ├── app.py                 # Main Flask app — all routes
 ├── db.py                  # MongoDB connection + collections
+├── auth.py                # JWT token generation + verification (@token_required)
 ├── analyzer.py            # Email header parsing + rule-based phishing scoring
-└── auth.py                # JWT token generation + verification (@token_required)
+└── feature_extractor.py   # Module 1: ML-ready feature extraction (facts only, no verdict)
 ```
 
 ---
@@ -41,7 +44,7 @@ phishshield-backend/
 
 2. Install dependencies:
    ```
-   pip install flask flask-bcrypt flask-cors pymongo python-dotenv pyjwt
+   pip install -r requirements.txt
    ```
 
 3. Create a `.env` file in the project root:
@@ -57,7 +60,7 @@ phishshield-backend/
    ```
    python app.py
    ```
-   Server runs at `http://127.0.0.1:5000`.
+   Server runs at `http://127.0.0.1:5000` (debug mode on).
 
 ---
 
@@ -167,12 +170,12 @@ Authorization: Bearer <token>
 
 Verdict is `"phishing"` if total score ≥ 50, otherwise `"safe"`.
 
-**Status:** ✅ Complete, tested (both crafted test headers and a real Gmail header), connected to frontend (`UploadPage.jsx` → `ResultPage.jsx`), protected with JWT
+**Status:** ✅ Complete, tested (crafted test headers + a real Gmail header), connected to frontend (`UploadPage.jsx` → `ResultPage.jsx`), protected with JWT
 
 ---
 
 ### `POST /analyze-email`
-Lightweight version — extracts only basic fields without scoring.
+Lightweight version — extracts only basic identity + auth fields, no scoring.
 
 **Body:**
 ```json
@@ -191,7 +194,28 @@ Lightweight version — extracts only basic fields without scoring.
 }
 ```
 
-**Status:** ✅ Complete, tested. Built as a simpler alternative to `/analyze` — **not currently used by the frontend** (frontend uses the full `/analyze` route instead).
+**Status:** ✅ Complete, tested. Simpler alternative to `/analyze` — **not currently used by the frontend** (frontend uses the full `/analyze` route instead).
+
+---
+
+### `POST /extract-features` 🧪 *(test-only, not yet connected to frontend)*
+**Module 1** of the planned ML pipeline. Extracts a full set of raw facts from an email header — no verdict, no scoring — so the same data can later be fed into an ML model as well as shown to the user.
+
+Accepts **either**:
+- Pasted text: `{"header_text": "..."}` (JSON body), **or**
+- An uploaded file: `multipart/form-data` with key `file` (`.eml` or `.txt` only)
+
+**Response fields:**
+| Category | Fields |
+|---|---|
+| Identity | `from`, `to`, `reply_to`, `return_path`, `subject`, `message_id`, `date` |
+| Domains | `from_domain`, `reply_to_domain`, `return_path_domain` |
+| Auth | `spf`, `dkim`, `dmarc` (`PASS` / `FAIL` / `NONE` / `UNKNOWN` — missing header ≠ automatic fail) |
+| Routing | `hop_count`, `sender_ips`, `received_headers`, `mail_hostnames` |
+| Derived flags | `from_reply_to_mismatch`, `from_return_path_mismatch` |
+| Content | `suspicious_keywords` |
+
+**Status:** ✅ Implemented and testable via Postman/curl. Deliberately kept separate from `/analyze` — it does not decide phishing/safe, it only extracts facts for later ML training.
 
 ---
 
@@ -216,6 +240,7 @@ Lightweight version — extracts only basic fields without scoring.
 - [x] JWT authentication (token generation + route protection)
 - [x] Email header parsing (`From`, `To`, `Subject`, `Return-Path`, SPF/DKIM/DMARC, sender IP)
 - [x] Rule-based phishing scoring engine
+- [x] Module 1: ML-ready feature extraction (`feature_extractor.py`, `/extract-features`) — supports pasted text and `.eml`/`.txt` file upload
 - [x] Frontend fully connected: Register → Login → Upload → Analyze → Result
 
 ## Pending Modules
@@ -224,6 +249,7 @@ Lightweight version — extracts only basic fields without scoring.
 - [ ] History page — display real saved scans per user
 - [ ] Reports page — real aggregated data
 - [ ] Organization/Admin dashboard — real aggregated data across users
+- [ ] Connect `/extract-features` output to the frontend
 - [ ] ML-based detection layer — *optional, time-permitting; current system is intentionally rule-based/heuristic and fully functional on its own*
 
 ---
@@ -231,5 +257,6 @@ Lightweight version — extracts only basic fields without scoring.
 ## Notes for Future Development
 
 - `scans_collection` was planned in `db.py` but not yet added — needed before History can be implemented
-- The `/analyze` route needs to be updated to insert a scan record into MongoDB after generating each result, tagged with the logged-in user's email (extracted from the verified JWT token via `request.current_user`, not from client-sent data)
+- The `/analyze` route needs to be updated to insert a scan record into MongoDB after generating each result, tagged with the logged-in user's email (extracted from the verified JWT token via `request.current_user`, **not** from client-sent data)
 - Frontend `HistoryPage.jsx` and `ReportsPage.jsx` currently still show hardcoded mock data
+- Keep `feature_extractor.py`'s raw dataset separate from the `scans_collection` used for History/Reports — ML training data and user-facing scan history are meant to stay apart

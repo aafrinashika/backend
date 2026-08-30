@@ -17,3 +17,9 @@ db = client[DB_NAME]
 
 # Define a "users" collection (like a table in SQL) inside that database
 users_collection = db["users"]
+
+# Define a "scans" collection - stores each user's scan history / report data.
+# NOTE: This is ONLY for the app's Scan History & Reports features.
+# It is NOT the ML training dataset - that will come from a separate raw
+# dataset later, kept intentionally apart from this collection.
+scans_collection = db["scans"]
