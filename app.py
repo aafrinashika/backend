@@ -231,5 +231,49 @@ def scan_reports():
         "averageRiskScore": average_risk_score
     }), 200
 
+# Route 9: Scan reports (monthly) - same stats as Route 8, grouped by month,
+# for the logged-in user only.
+@app.route('/api/scans/reports/monthly', methods=['GET'])
+@token_required
+def scan_reports_monthly():
+    user_email = request.current_user.get('email')
+
+    try:
+        scans = list(scans_collection.find({"user_email": user_email}))
+    except Exception:
+        return jsonify({"error": "Could not fetch report data"}), 500
+
+    # Group scans by (year, month) using the same fields the aggregate
+    # report already relies on (verdict, risk_score, timestamp).
+    buckets = {}
+    for s in scans:
+        ts = s.get('timestamp')
+        if ts is None:
+            continue
+        key = (ts.year, ts.month)
+        buckets.setdefault(key, []).append(s)
+
+    months = []
+    for (year, month), month_scans in sorted(buckets.items()):
+        total = len(month_scans)
+        phishing = sum(1 for s in month_scans if s.get('verdict') == 'phishing')
+        safe = total - phishing
+        safe_rate = round((safe / total) * 100, 2) if total else 0
+        avg_risk_score = round(
+            sum(s.get('risk_score', 0) for s in month_scans) / total, 2
+        ) if total else 0
+
+        months.append({
+            "month": datetime.date(year, month, 1).strftime("%B"),
+            "year": year,
+            "totalScans": total,
+            "safeScans": safe,
+            "phishingScans": phishing,
+            "safeRate": safe_rate,
+            "averageRiskScore": avg_risk_score
+        })
+
+    return jsonify({"months": months}), 200
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
