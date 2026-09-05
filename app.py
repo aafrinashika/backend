@@ -2,6 +2,7 @@ import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
+from bson.objectid import ObjectId
 from db import users_collection, scans_collection
 from analyzer import analyze_header, extract_email_fields
 from auth import generate_token, token_required
@@ -54,13 +55,15 @@ def analyze():
         "timestamp": datetime.datetime.utcnow()
     }
     try:
-        scans_collection.insert_one(scan_doc)
+        inserted = scans_collection.insert_one(scan_doc)
+        result['scanId'] = str(inserted.inserted_id)
     except Exception:
         # Don't fail the whole request just because saving history failed -
         # the user still gets their analysis result back.
         pass
 
     return jsonify(result), 200
+
 # Route 3: Register - creates a new user
 @app.route('/register', methods=['POST'])
 def register():
@@ -193,6 +196,21 @@ def scan_history():
         return jsonify({"error": "Could not fetch scan history"}), 500
 
     return jsonify({"scans": [serialize_scan(s) for s in scans]}), 200
+
+# Route 7b: Single scan - returns one scan by its ID, for the logged-in user only
+@app.route('/api/scans/<scan_id>', methods=['GET'])
+@token_required
+def get_scan(scan_id):
+    user_email = request.current_user.get('email')
+    try:
+        scan = scans_collection.find_one({"_id": ObjectId(scan_id), "user_email": user_email})
+    except Exception:
+        return jsonify({"error": "Invalid scan id"}), 400
+
+    if not scan:
+        return jsonify({"error": "Scan not found"}), 404
+
+    return jsonify(serialize_scan(scan)), 200
 
 # Route 8: Scan reports - real aggregated stats for the logged-in user only
 @app.route('/api/scans/reports', methods=['GET'])
