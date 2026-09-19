@@ -7,7 +7,8 @@ from db import users_collection, scans_collection
 from analyzer import analyze_header, extract_email_fields
 from auth import generate_token, token_required
 from feature_extractor import extract_features   # <-- NEW: Module 1 feature extractor
-
+from feature_extractor import extract_features
+from ml_predictor import predict_from_extracted
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
 CORS(app)
@@ -292,6 +293,12 @@ def scan_reports_monthly():
         })
 
     return jsonify({"months": months}), 200
-
+@app.route('/predict-ml', methods=['POST'])
+def predict_ml():
+    data = request.get_json()
+    header_text = data.get('header_text', '')
+    facts = extract_features(header_text)
+    result = predict_from_extracted(facts)
+    return jsonify(result)
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
